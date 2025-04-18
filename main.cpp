@@ -15,104 +15,77 @@ class Chess;
 class Piece;
 
 namespace cc {
-	struct Coord {
-		int bit_idx;
-		uint64_t bitmask;
-		int x, y;
-		int bitboard_idx;
-		int local_bit_idx;
+	struct BoardCoord {
+		int row;
+		int col;
+		int local_idx;
+		std::string alpha;
 	};
-	Coord init_coord(int x, int y) {
-		Coord c;
-		
-		c.bit_idx = (y * 8) + x;
-		c.bitmask = 1ULL << c.bit_idx; 
-		c.x = x;
-		c.y = y;
-		c.bitboard_idx = c.bit_idx / 64;
-		c.local_bit_idx = c.bit_idx % 64;
-		
-		return c;
-	}
-	Coord init_coord(int bit_idx) {
-		Coord c;
-		
-		c.bit_idx = bit_idx;
-		c.bitmask = 1ULL << c.bit_idx; 
-		c.x = c.bit_idx % 8;
-		c.y = c.bit_idx / 8;
-		c.bitboard_idx = c.bit_idx / 64;
-		c.local_bit_idx = c.bit_idx % 64;
-		
-		return c;
-	}
-	Coord init_coord(uint64_t bitmask) {
 	
-		Coord c;
-		c.bitmask = bitmask; 
+	int calc_local_index(const int x, const int y, const int width) {
+		return (y * width) + x;
+	}
+	
+	std::string xy_to_alpha(int x, int y) {
+		std::string out("Z9");
+		out[0] = x + 'A';
+		out[1] = y + '1';
+		return out;
+	}
+	
+	BoardCoord init_boardcoord_alpha(const std::string& alpha, const int width) {
+		BoardCoord c;
 		
-		#if defined(__GNUC__) || defined(__clang__)
-			c.bit_idx = __builtin_ctzll(c.bitmask);
-		#else
+		int x = alpha[0] - 'A';
+		int y = alpha[1] - '1';
 		
-			c.bit_idx = 0;
-			while ((c.bitmask & 1) == 0 && c.bit_idx < 64) {
-				c.bitmask >>= 1;
-				c.bit_idx++;
-			}
-		#endif
-		
-		c.bitboard_idx = c.bit_idx / 64;
-		c.local_bit_idx = c.bit_idx % 64;
-		c.x = c.bit_idx % 8;
-		c.y = c.bit_idx / 8;
+		c.row = x;
+		c.col = y;
+		c.alpha = alpha;
+		c.local_idx = calc_local_index(x, y, width);
 		
 		return c;
 	}
-	uint64_t xycoord_to_bitmask(int x, int y) {
-		return 1ULL << ((y*8) + x);
-	}
-	uint64_t strcoord_to_bitmask(const std::string& coord) {
-		if(coord.length() != 2) return 0;
-	
-		int x = coord[0] - 'A';
-		int y = coord[1] - '1';
+	BoardCoord init_boardcoord_xy(int x, int y, int width) {
+		BoardCoord c;
 		
-		return xycoord_to_bitmask(x, y);
+		c.row = x;
+		c.col = y;
+		c.alpha = xy_to_alpha(x, y);
+		c.local_idx = calc_local_index(x, y, width);
+		
+		return c;
 	}
+
 }
 
 
 class Piece {
 public:
 	
-	Piece(char pce_stamp, std::string symbol, std::string pce_name): 
-		_stamp(pce_stamp),
+	Piece(char symbol, std::string pce_name): 
 		_symbol(symbol), 
 		_name(pce_name), 
-		_current_coord(nullptr) {}
+		_current_loc(nullptr) {}
 	
-	void set_attribute(const std::string& attr_name, const std::string attr_logic) {
-		_m_attrs[attr_name] = attr_logic;	
+	void set_attribute(const std::string& attr_name, const std::string& attr) {
+		_attrs_map[attr_name] = attr;	
 	}
-	void assign_new_coord(std::shared_ptr<cc::Coord> coord) {
-		_current_coord = std::move(coord);
+	void assign_new_location(const cc::BoardCoord& coord) {
+		_current_loc = std::make_unique<cc::BoardCoord>(coord);
 	}
-	std::shared_ptr<cc::Coord> get_current_coord() const {
-		return _current_coord;
+	cc::BoardCoord &get_location() const {
+		return *_current_loc.get();
 	}
-	const std::map<std::string, std::string>& get_attributes_map() {
-		return _m_attrs;
+	const std::map<std::string, std::string>& get_all_attributes() {
+		return _attrs_map;
 	}
-	const std::string get_attribute(std::string attr_name) {
-		return _m_attrs.count(attr_name) ? _m_attrs[attr_name] : "";// TODO: else it should return a local constant value instead.
-	}
-	
-	char stamp() const {
-		return _stamp;
+	const std::string& get_attribute(std::string attr_name) {
+		auto it = _attrs_map.find(attr_name);
+		return it != _attrs_map.end() ? it->second : std::string("");// TODO: else it should return a local constant value instead.
 	}
 	
-	std::string get_symbol() const {
+	char get_symbol() const {
 		return _symbol;
 	}
 	
@@ -122,11 +95,10 @@ public:
 	}
 	
 protected:
-	std::map<std::string, std::string> _m_attrs;
-	std::shared_ptr<cc::Coord> _current_coord;
+	std::map<std::string, std::string> _attrs_map;
+	std::unique_ptr<cc::BoardCoord> _current_loc;
 	std::string _name;
-	std::string _symbol;
-	char _stamp;
+	char _symbol;
 private:
 	
 		
@@ -138,190 +110,178 @@ private:
 class Board {
 public:	
 	static constexpr uint64_t ENUMERATED = 0x1;
-	Board(const int height, const int width, const uint64_t flag) : _height(height), _width(width), _num_bitboards((height * width) / 64) {
-		_v_board.resize(_num_bitboards, 0ULL); // init to 0
+	
+	Board(const int height, const int width, const uint64_t flags) 
+	: _height(height), _width(width), _flags(flags) {
+		std::fill(_board_spaces_arr, _board_spaces_arr + width * height, '-');
+	}
+	
+	void position_piece(Piece& pce, int x, int y) {
+	
+		cc::BoardCoord cur_loc = pce.get_location();
+		int new_idx = cc::calc_local_index(x, y, _width);
 		
-		if(flag == Board::ENUMERATED) this->enumerate();
+		_board_spaces_arr[new_idx] = pce.get_symbol();
 		
-		for(int y = _height ; y >= 0 ; --y) {
-			for(int x = 0 ; x < _width ; ++x) {
-				cc::Coord coord = cc::init_coord(x, y);
-				_m_pos[coord.bitmask] = std::make_shared<cc::Coord>(coord);
-			}
-		}
-		
+		pce.assign_new_location(new_idx);
+		add_piece(&pce);
 		
 	}
 	
-	void add_piece(std::shared_ptr<Piece> pce_ptr, int x, int y) {
-	
-		auto coord = std::make_shared<cc::Coord>(cc::init_coord(x, y));
-		pce_ptr->assign_new_coord(coord);
-		
-		_v_board[coord->bitboard_idx] |= coord->bitmask;
-		_m_pces[pce_ptr->get_name()] = pce_ptr;
+	void add_piece(Piece &pce) {
+		char symbol = pce_ptr->get_symbol();
+		_pces_map[symbol] = std::make_shared<Piece>(pce_ptr); 
 	}
 	
-	void draw() {
 	
-		uint64_t all_occupancies = _v_board[0];
-		int x, y;
+	void draw() const {
+	
+		bool board_enumerated = this->is_flag_active(Board::ENUMERATED);
 		
 		// Enumerating top rows.
-		if(this->needs_enumeration()) {
+		if(board_enumerated) {
 			std::cout << "  ";
-			for(x = 0 ; x < _width ; ++x) {
-				std::cout << " " << (char) (x + 'A') << ' ';
+			for(int x = 0 ; x < _width ; ++x) {
+				std::cout << " " << static_cast<char>(x + 'A') << ' ';
 			}
 			
 			std::cout << '\n';
 		}
 		
-		for(y = _height - 1 ; y >= 0 ; --y) {
+		for(int y = _height - 1 ; y >= 0 ; --y) {
 			
 			// Enumerating top columns.
-			if(this->needs_enumeration()) std::cout << y + 1 << " ";
+			if(board_enumerated) std::cout << (y + 1) << " ";
 			
-			for(x = 0 ; x < _width ; ++x) {
-				cc::Coord coord = cc::init_coord(x, y);
-				_m_pos[coord.bitmask] = std::make_shared<cc::Coord>(coord);
-				
-				bool has_piece = (_v_board[coord.bitboard_idx] & coord.bitmask) != 0;
-				
-				
-				if(has_piece) {
-				
-					for(auto& [pce_name, pce_ptr] : _m_pces) {
-						if(pce_ptr->get_current_coord()->bitmask == coord.bitmask) {
-							std::cout << "[" << pce_ptr->get_symbol() << "]";
-							break;
-						}
-					}
-				} else {
-					std::cout << "[-]";
-				}
+			for(int x = 0 ; x < _width ; ++x) {
+				int idx = y*_width+x;
+				std::cout << "[" << _board_spaces_arr[idx] << "]";
 			}
 			// Enumerating bottom columns.
-			if(this->needs_enumeration()) std::cout << " " << y + 1;
+			if(board_enumerated) std::cout << " " << y + 1;
 			std::cout << '\n';
-		}
-		// Enumerating bottom rows.
-		if(this->needs_enumeration()) {
-			std::cout << "  ";
-			for(x = 0 ; x < _width ; ++x) {
-				std::cout << " " << (char) (x + 'A') << ' ';
-			}
 			
+		}
+		
+		// Enumerating bottom rows.
+		if(board_enumerated) {
+			std::cout << "  ";
+			for(int x = 0 ; x < _width ; ++x) {
+				std::cout << " " << static_cast<char>(x + 'A') << ' ';
+			}
 			std::cout << '\n';
 		}
 	
 	}
 	
-	void enumerate() {
-		this->set_enumeration_flag();
-	}
+	void move_piece(Piece& pce, const cc::BoardCoord& new_loc) {
+
 	
-	void clean_enumerate() {
-		this->clear_enumeration_flag();
+		
+		pce.assign_new_location(new_loc);
+		
+		int new_idx = new_loc.local_idx;
+		int old_idx = pce.get_location().local_idx;
+		
+		_board_spaces_arr[pce.get_location().local_idx] = '-'; // Reset old
+		_board_spaces_arr[new_loc.local_idx] = pce.get_symbol();   // Set new
+		const_cast<Piece&>(pce).assign_new_location(new_loc);
+		 
+		
 	}
-	
-	void move_piece(uint64_t from, uint64_t to) {
-		int from_idx = cc::init_coord(from).bitboard_idx;
-		int to_idx = cc::init_coord(to).bitboard_idx;
-		
-		_v_board[from_idx] &= ~from;
-		_v_board[to_idx] |= to;
-		
-		// Update the pieces.
-		for(auto& [name, pce_ptr] : _m_pces) {
-			if(pce_ptr->get_current_coord()->bitmask == from) {
-				auto new_coord = std::make_shared<cc::Coord>(cc::init_coord(to));
-				pce_ptr->assign_new_coord(new_coord);
-				break;
+
+	const Piece* get_piece_by_symbol(char symbol) {
+		auto it = _pces_map.find(symbol);
+		if(it != _pces_map.end() && it->second) {
+			return it->second.get();
+		}
+		return nullptr;
+	}
+	const Piece* get_piece_by_name(const std::string& pce_name) const {
+		for(const auto& pair : _pces_map) {
+			if(pair.second && pair.second->get_name() == pce_name) {
+				return pair.second.get();
 			}
 		}
-		
-		
+		return nullptr;
 	}
 	
-	std::shared_ptr<Piece> get_piece_by_name(std::string pce_name) {
-		return _m_pces.count(pce_name) ? _m_pces[pce_name] : nullptr;
+	void set_enumerate() {
+		turn_on(Board::ENUMERATED);
 	}
+	void clean_enumerate() {
+		turn_off(Board::ENUMERATED);
+	}
+	
 private:
+	
+	std::map<char, std::shared_ptr<Piece>> _pces_map;
 	int _height, _width;
-	std::vector<uint64_t> _v_board;
-	uint64_t _flags;
-	std::map<uint64_t, std::shared_ptr<cc::Coord>> _m_pos; // Piece's positions in the map. 
-	int _num_bitboards;
+	char _board_spaces_arr[300];
+	uint64_t _flags; 
 	std::istringstream _iss;
-	std::map<std::string, std::shared_ptr<Piece>> _m_pces;	
 	
 	// XXX: Logic
-	void move_bitmap(uint64_t from, uint64_t to) {
-		_v_board[0] &= ~from;
-		_v_board[0] |= to;
+	void turn_off(const uint64_t flag) {
+		_flags &= ~flag;
 	}
 	
-	void set_enumeration_flag() {
-		_flags |= ENUMERATED;
+	void turn_on(const uint64_t flag) {
+		_flags |= flag;
 	}
-	
-	void clear_enumeration_flag() {
-		_flags &= ~ENUMERATED;
+	bool is_flag_active(const uint64_t flag) const {
+		return (_flags & flag) != 0;
 	}
-	bool needs_enumeration() const {
-		return (_flags & ENUMERATED) != 0;
-	}
-	
 	
 };
 
 
 class Chess {
 public:
-	Chess(std::shared_ptr<Board> board) : _board_ptr(std::move(board)), _playing(true) {
-		
-		this->generate_black_pieces();
-		this->generate_white_pieces();
-		
-	}
 	
+	Chess() : _board_ptr(std::move(std::make_unique<Board>(8, 8))), _playing(true) {
+		generate_black_pieces();
+		generate_white_pieces();
+	}
 	~Chess() = default;
+	
 	void play() {
-		std::string player_response;
+		if(!_board_ptr) {
+			throw std::runtime_error("Unexpected, we don't have a board to play with.");
+		}
 		while(_playing) {
 			_board_ptr->draw();
-			this->get_user_input();
-			this->process_input();
+			get_user_input();
+			process_input();
 		}
 	}
-	/**
-	*	Takes an updated `v_tokens` and adds logic to its content via a rudimentary system
-	*	of if statements designed to guard the system's "generic" features s.a. "quit"
-	*	before passing the given tokens to local function `update_board_w_input`.
-	*	
-	*	input:
-	*		void
-	*	output:
-	*		 void
-	*/
+	
 	void process_input() {
-		std::vector<std::string> v_tokens;
-		std::string token;
-		while(_iss >> token) {
-			v_tokens.push_back(token);
-			if(token == "quit") _playing = false; // Bye!
+		std::vector<std::string> tokenized_input_lst;
+		std::string input;
+		
+		
+		
+		while(_iss >> input) {
+	
+			if(input == "quit") {
+				_playing = false; // Bye!
+				break;
+			}
+			std::transform(input.begin(), input.end(), input.begin(), [](unsigned char c) { return std::tolower(c); });
+			tokenized_input_lst.push_back(input);
 		}
-		if(!_iss.eof()) {
+		
+		if(_iss.fail() && !_iss.eof()) {
 			std::cerr << "Error processing input." << std::endl;
 		}
-		this->update_board_w_input(v_tokens);
-	}
-	bool is_valid_move(Piece *pce_ptr, uint64_t from, uint64_t to) {
-		auto from_coord = cc::init_coord(from);
-		auto to_coord = cc::init_coord(to);
 		
-		std::string rule = pce_ptr->get_attribute("movement");
+		update_board_w_input(tokenized_input_lst);
+	}
+	
+	bool is_valid_move(Piece *pce_ptr, cc::BoardCoord& from, cc::BoardCoord& to) {
+		
+		// Logic for later.
 		return true;
 	}
 	/**
@@ -332,21 +292,32 @@ public:
 	*	output:
 	*		void
 	*/
-	void update_board_w_input(const std::vector<std::string>& tokens) {
-		if(tokens.empty()) return;
+	void update_board_w_input(const std::vector<std::string>& input_lst) {
+		if(input_lst.empty()) return;
 		
-		std::string action_token = tokens[0];
+		std::string action_token = input_lst[0];
 		
-		if(action_token == "move" && tokens.size() >= 3) {
-			this->move_piece_action(tokens[1], tokens[2]);
-		} else if (action_token == "make" && tokens.size() >= 2) {
-			if(tokens[1] == "enumerate") {
-				_board_ptr->enumerate();
+		if(action_token == "move" && input_lst.size() >= 3) {
+			std::string pce_name = input_lst[1];
+			std::string pce_new_loc = input_lst[2];
+			move_piece_action(pce_name, pce_new_loc);
+		} 
+		else if (action_token == "check" && input_lst.size() >= 2 ) {
+			std::string pce_name = input_lst[1];
+			//check_action(pce_name); // 
+		} 
+		else if (action_token == "make" && input_lst.size() >= 2) {
+			if(input_lst[1] == "enumerate") {
+				_board_ptr->set_enumerate();
 			}
-		} else if (action_token == "clean" && tokens.size() >= 2) {
-			if(tokens[1] == "enumerate") {
+		} 
+		else if (action_token == "clean" && input_lst.size() >= 2) {
+			if(input_lst[1] == "enumerate") {
 				_board_ptr->clean_enumerate();
 			}
+		} 
+		else {
+			std::cout << "Can't process the command." << std::endl;
 		}
 	}
 	
@@ -363,85 +334,87 @@ public:
 			return get_user_input();
 		}
 		
-		this->clean_stream();
+		clean_stream();
 		_iss.str(input);
 	}
 private:
 	std::shared_ptr<Board> _board_ptr;
 	std::istringstream _iss;
 	bool _playing;
-	// 
+	
+	
+	// Pieces generation... 
 	void generate_black_pieces() {
 	
-		auto rook_b_0 = std::make_shared<Piece>('r', "♖", "black_rook_0");
-		auto knight_b_0 = std::make_shared<Piece>('k', "♘", "black_knight_0"); 
-		auto bishop_b_0 = std::make_shared<Piece>('t', "♗", "black_bishop_0"); 
-		auto queen_b = std::make_shared<Piece>('q', "♕", "black_queen"); 
-		auto king_b = std::make_shared<Piece>('k', "♔", "black_king"); 
-		auto bishop_b_1 = std::make_shared<Piece>('t', "♗", "black_bishop_1"); 
-		auto knight_b_1 = std::make_shared<Piece>('k', "♘", "black_knight_1"); 
-		auto rook_b_1 = std::make_shared<Piece>('r', "♖", "black_rook_1");
-		auto peon_b_0 = std::make_shared<Piece>('p', "♙", "black_peon_0");
-		auto peon_b_1 = std::make_shared<Piece>('p', "♙", "black_peon_1");
-		auto peon_b_2 = std::make_shared<Piece>('p', "♙", "black_peon_2");
-		auto peon_b_3 = std::make_shared<Piece>('p', "♙", "black_peon_3");
-		auto peon_b_4 = std::make_shared<Piece>('p', "♙", "black_peon_4");
-		auto peon_b_5 = std::make_shared<Piece>('p', "♙", "black_peon_5");
-		auto peon_b_6 = std::make_shared<Piece>('p', "♙", "black_peon_6");
-		auto peon_b_7 = std::make_shared<Piece>('p', "♙", "black_peon_7");
-		this->generate_rook_move_logic(rook_b_0);
-		_board_ptr->add_piece(rook_b_0, 0, 7);
-		_board_ptr->add_piece(knight_b_0, 1, 7);
-		_board_ptr->add_piece(bishop_b_0, 2, 7);
-		_board_ptr->add_piece(queen_b, 3, 7);
-		_board_ptr->add_piece(king_b, 4, 7);
-		_board_ptr->add_piece(bishop_b_1, 5, 7);
-		_board_ptr->add_piece(knight_b_1, 6, 7);
-		_board_ptr->add_piece(rook_b_1, 7, 7);
-		_board_ptr->add_piece(peon_b_0, 0, 6);
-		_board_ptr->add_piece(peon_b_1, 1, 6);
-		_board_ptr->add_piece(peon_b_2, 2, 6);
-		_board_ptr->add_piece(peon_b_3, 3, 6);
-		_board_ptr->add_piece(peon_b_4, 4, 6);
-		_board_ptr->add_piece(peon_b_5, 5, 6);
-		_board_ptr->add_piece(peon_b_6, 6, 6);
-		_board_ptr->add_piece(peon_b_7, 7, 6);
+		Piece rook_b_0 = Piece('r', "♖", "black_rook_0");
+		Piece knight_b_0 = Piece('k', "♘", "black_knight_0"); 
+		Piece bishop_b_0 = Piece('t', "♗", "black_bishop_0"); 
+		Piece queen_b = Piece('q', "♕", "black_queen"); 
+		Piece king_b = Piece('k', "♔", "black_king"); 
+		Piece bishop_b_1 = Piece('t', "♗", "black_bishop_1"); 
+		Piece knight_b_1 = Piece('k', "♘", "black_knight_1"); 
+		Piece rook_b_1 = Piece('r', "♖", "black_rook_1");
+		Piece peon_b_0 = Piece('p', "♙", "black_peon_0");
+		Piece peon_b_1 = Piece('p', "♙", "black_peon_1");
+		Piece peon_b_2 = Piece('p', "♙", "black_peon_2");
+		Piece peon_b_3 = Piece('p', "♙", "black_peon_3");
+		Piece peon_b_4 = Piece('p', "♙", "black_peon_4");
+		Piece peon_b_5 = Piece('p', "♙", "black_peon_5");
+		Piece peon_b_6 = Piece('p', "♙", "black_peon_6");
+		Piece peon_b_7 = Piece('p', "♙", "black_peon_7");
+		generate_rook_move_logic(rook_b_0);
+		_board_ptr->position_piece(rook_b_0, 0, 7);
+		_board_ptr->position_piece(knight_b_0, 1, 7);
+		_board_ptr->position_piece(bishop_b_0, 2, 7);
+		_board_ptr->position_piece(queen_b, 3, 7);
+		_board_ptr->position_piece(king_b, 4, 7);
+		_board_ptr->position_piece(bishop_b_1, 5, 7);
+		_board_ptr->position_piece(knight_b_1, 6, 7);
+		_board_ptr->position_piece(rook_b_1, 7, 7);
+		_board_ptr->position_piece(peon_b_0, 0, 6);
+		_board_ptr->position_piece(peon_b_1, 1, 6);
+		_board_ptr->position_piece(peon_b_2, 2, 6);
+		_board_ptr->position_piece(peon_b_3, 3, 6);
+		_board_ptr->position_piece(peon_b_4, 4, 6);
+		_board_ptr->position_piece(peon_b_5, 5, 6);
+		_board_ptr->position_piece(peon_b_6, 6, 6);
+		_board_ptr->position_piece(peon_b_7, 7, 6);
 		
 	}
 	
 	void generate_white_pieces() {
-		auto rook_w_0 = std::make_shared<Piece>('R', "♜", "white_rook_0");
-		auto knight_w_0 = std::make_shared<Piece>('K', "♞", "white_knight_0"); 
-		auto bishop_w_0 = std::make_shared<Piece>('T', "♝", "white_bishop_0"); 
-		auto queen_w = std::make_shared<Piece>('Q', "♛", "white_queen"); 
-		auto king_w = std::make_shared<Piece>('K', "♚", "white_king"); 
-		auto bishop_w_1 = std::make_shared<Piece>('T', "♝", "white_bishop_1"); 
-		auto knight_w_1 = std::make_shared<Piece>('K', "♞", "white_knight_1"); 
-		auto rook_w_1 = std::make_shared<Piece>('R', "♜", "white_rook_1");
-		auto peon_w_0 = std::make_shared<Piece>('P', "♟", "white_peon_0");
-		auto peon_w_1 = std::make_shared<Piece>('P', "♟", "white_peon_1");
-		auto peon_w_2 = std::make_shared<Piece>('P', "♟", "white_peon_2");
-		auto peon_w_3 = std::make_shared<Piece>('P', "♟", "white_peon_3");
-		auto peon_w_4 = std::make_shared<Piece>('P', "♟", "white_peon_4");
-		auto peon_w_5 = std::make_shared<Piece>('P', "♟", "white_peon_5");
-		auto peon_w_6 = std::make_shared<Piece>('P', "♟", "white_peon_6");
-		auto peon_w_7 = std::make_shared<Piece>('P', "♟", "white_peon_7");
-		_board_ptr->add_piece(rook_w_0, 0, 0);		
-		_board_ptr->add_piece(knight_w_0, 1, 0);
-		_board_ptr->add_piece(bishop_w_0, 2, 0);
-		_board_ptr->add_piece(queen_w, 3, 0);
-		_board_ptr->add_piece(king_w, 4, 0);
-		_board_ptr->add_piece(bishop_w_1, 5, 0);
-		_board_ptr->add_piece(knight_w_1, 6, 0);
-		_board_ptr->add_piece(rook_w_1, 7, 0);
-		_board_ptr->add_piece(peon_w_0, 0, 1);		
-		_board_ptr->add_piece(peon_w_1, 1, 1);
-		_board_ptr->add_piece(peon_w_2, 2, 1);
-		_board_ptr->add_piece(peon_w_3, 3, 1);
-		_board_ptr->add_piece(peon_w_4, 4, 1);
-		_board_ptr->add_piece(peon_w_5, 5, 1);
-		_board_ptr->add_piece(peon_w_6, 6, 1);
-		_board_ptr->add_piece(peon_w_7, 7, 1);
+		Piece rook_w_0 = Piece('R', "♜", "white_rook_0");
+		Piece knight_w_0 = Piece('K', "♞", "white_knight_0"); 
+		Piece bishop_w_0 = Piece('T', "♝", "white_bishop_0"); 
+		Piece queen_w = Piece('Q', "♛", "white_queen"); 
+		Piece king_w = Piece('K', "♚", "white_king"); 
+		Piece bishop_w_1 = Piece('T', "♝", "white_bishop_1"); 
+		Piece knight_w_1 = Piece('K', "♞", "white_knight_1"); 
+		Piece rook_w_1 = Piece('R', "♜", "white_rook_1");
+		Piece peon_w_0 = Piece('P', "♟", "white_peon_0");
+		Piece peon_w_1 = Piece('P', "♟", "white_peon_1");
+		Piece peon_w_2 = Piece('P', "♟", "white_peon_2");
+		Piece peon_w_3 = Piece('P', "♟", "white_peon_3");
+		Piece peon_w_4 = Piece('P', "♟", "white_peon_4");
+		Piece peon_w_5 = Piece('P', "♟", "white_peon_5");
+		Piece peon_w_6 = Piece('P', "♟", "white_peon_6");
+		Piece peon_w_7 = Piece('P', "♟", "white_peon_7");
+		_board_ptr->position_piece(rook_w_0, 0, 0);
+		_board_ptr->position_piece(knight_w_0, 1, 0);
+		_board_ptr->position_piece(bishop_w_0, 2, 0);
+		_board_ptr->position_piece(queen_w, 3, 0);
+		_board_ptr->position_piece(king_w, 4, 0);
+		_board_ptr->position_piece(bishop_w_1, 5, 0);
+		_board_ptr->position_piece(knight_w_1, 6, 0);
+		_board_ptr->position_piece(rook_w_1, 7, 0);
+		_board_ptr->position_piece(peon_w_0, 0, 1);
+		_board_ptr->position_piece(peon_w_1, 1, 1);
+		_board_ptr->position_piece(peon_w_2, 2, 1);
+		_board_ptr->position_piece(peon_w_3, 3, 1);
+		_board_ptr->position_piece(peon_w_4, 4, 1);
+		_board_ptr->position_piece(peon_w_5, 5, 1);
+		_board_ptr->position_piece(peon_w_6, 6, 1);
+		_board_ptr->position_piece(peon_w_7, 7, 1);
 		
 	}
 	
@@ -453,6 +426,7 @@ private:
 	void generate_rook_move_logic(std::shared_ptr<Piece>& pce_ptr) {
 		
 		pce_ptr->set_attribute("movement", "& all_x all_y");
+		
 	}
 	
 	// XXX: LOGIC 
@@ -471,20 +445,19 @@ private:
 	
 	// XXX: ACTIONS
 	void move_piece_action(const std::string& pce_name, const std::string& to) {
-		std::shared_ptr<Piece> pce_ptr = _board_ptr->get_piece_by_name(pce_name);
+		auto pce_ptr = _board_ptr->get_piece_by_name(pce_name);
+		auto new_loc = cc::init_boardcoord(to);
 			
-		if(pce_ptr) { // If the piece exists on the board
-			uint64_t target_bitmask = cc::strcoord_to_bitmask(to);
-			uint64_t current_bitmask = pce_ptr->get_current_coord()->bitmask;	
-			if(this->is_valid_move(pce_ptr.get(), current_bitmask, target_bitmask)) {
-				_board_ptr->move_piece(current_bitmask, target_bitmask);
-			} else {
-				std::cerr << "Illegal move!\n";
-			}
+		if(pce_ptr && new_loc) { // If the piece exists on the board
+			
+			_board_ptr->move_piece(pce_ptr, new_loc);
+			
 		} else {	
 			std::cerr << "Piece not found: " << pce_name << "\n";
 		}
 	}
+
+	
 };
 
 
